@@ -1,7 +1,15 @@
 [package]
 name = "snowfinch"
+description = "Authentication and sessions for Rust tower/axum servers."
 version = "0.1.0"
+authors = ["Callum Hopkins"]
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/callum-hopkins-dev/snowfinch"
+readme = "README.md"
+documentation = "https://docs.rs/snowfinch"
+keywords = ["authentication", "authorization", "session", "tower", "axum"]
+categories = ["authentication", "web-programming", "asynchronous"]
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, optional = true }
