@@ -1,7 +1,7 @@
 [package]
 name = "snowfinch"
 description = "Authentication and sessions for Rust tower/axum servers."
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Callum Hopkins"]
 edition = "2024"
 license = "MIT"
