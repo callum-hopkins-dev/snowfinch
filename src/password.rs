@@ -153,7 +153,7 @@ where
 {
     fn encode_by_ref(
         &self,
-        buf: &mut <D as sqlx::Database>::ArgumentBuffer,
+        buf: &mut <D as sqlx::Database>::ArgumentBuffer<'q>,
     ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
         const_hex::Buffer::<_, true>::new()
             .const_format(self.as_bytes())
