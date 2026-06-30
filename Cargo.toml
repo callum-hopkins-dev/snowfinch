@@ -1,0 +1,42 @@
+[package]
+name = "snowfinch"
+description = "Authentication and sessions for Rust tower/axum servers."
+version = "0.1.0"
+authors = ["Callum Hopkins"]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/callum-hopkins-dev/snowfinch"
+readme = "README.md"
+documentation = "https://docs.rs/snowfinch"
+keywords = ["authentication", "authorization", "session", "tower", "axum"]
+categories = ["authentication", "web-programming", "asynchronous"]
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, optional = true }
+chrono = "0.4.45"
+const-hex = "1.19.1"
+constant_time_eq = { version = "0.5.0", optional = true }
+http = "1.4.2"
+moka = { version = "0.12.15", features = ["future"], optional = true }
+pin-project-lite = "0.2.17"
+rand = "0.10.1"
+serde = { version = "1.0.228", optional = true, features = ["derive"] }
+sha2 = { version = "0.11.0", default-features = false, optional = true }
+sqlx = { version = "0.9.0", optional = true, default-features = false }
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["rt"], optional = true }
+tower = "0.5.3"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = ["memory-store", "session-local", "password"]
+serde = ["dep:serde", "const-hex/serde", "chrono/serde"]
+
+memory-store = ["dep:moka", "dep:tokio"]
+session-local = ["dep:tokio"]
+password = ["dep:sha2", "dep:constant_time_eq"]
+
+sqlx = ["dep:sqlx"]
+axum = ["dep:axum"]
