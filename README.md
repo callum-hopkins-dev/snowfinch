@@ -12,38 +12,36 @@ Authentication and sessions for Rust tower/axum servers.
 
 </div>
 
-## about 
+Snowfinch provides a small set of interfaces for session-based authentication
+without prescribing an application database or user model. The core middleware
+is built on [Tower](https://crates.io/crates/tower), while the optional `axum`
+feature adds extractors, response integration, and router conveniences.
 
-`snowfinch` provides the building blocks for session-based authentication in
-Tower-compatible HTTP stacks. It is designed to work naturally with Axum, but
-the core middleware is implemented in terms of `tower::Layer` and
-`tower::Service` so it can be used with other Tower HTTP frameworks too.
+## Architecture
 
-The crate centres around three traits:
+Applications provide three pieces:
 
-- `User`, implemented by your application user type.
-- `Backend`, implemented by the component that loads and authenticates
-  users.
-- `Store`, implemented by the component that persists sessions.
+- a `User` value containing a stable ID and permission `Scope`;
+- a `Backend` which loads users and authenticates credentials;
+- a `Store` which persists compact session records.
 
-Add `ProvideAuthenticationLayer` to your service stack to make an
-`Authentication` handle and, when a valid `session` cookie is present, the
-current `Session` available through request extensions. The authorization
-helpers in `authorization` can then reject unauthenticated users or require
-custom permission checks.
+Stores retain only a session ID, expiry, and user ID. When a request carries a
+valid `session` cookie, `ProvideAuthenticationLayer` loads that compact record,
+rejects it if expired, and asks the backend for the current user. The resulting
+`Session` and a cheaply cloned `Authentication` handle are inserted into the
+request extensions.
 
-The `scope!` macro defines compact bitmap-backed permission types. Generated
-scopes support bitwise operations, lookup by name, iteration over active
-flags, and optional `serde`/`sqlx` integration when those feature flags are
-enabled.
+This separation keeps large user values out of the session store and ensures
+that restored sessions use current user data and permissions.
 
-### example
+## Example
 
 ```rust
-use snowfinch::{Backend, ProvideAuthenticationLayer, Session, User, scope};
+use std::convert::Infallible;
+
+use snowfinch::{Backend, ProvideAuthenticationLayer, User, scope};
 
 scope! {
-    // Permissions granted to an application user.
     pub enum Permissions {
         Read = 0,
         Write = 1,
@@ -51,7 +49,6 @@ scope! {
     }
 }
 
-#[derive(Clone)]
 struct AppUser {
     id: i64,
     scope: Permissions,
@@ -60,27 +57,96 @@ struct AppUser {
 impl User for AppUser {
     type Scope = Permissions;
     type Id = i64;
-    type Credentials = (String, String);
 
-    fn id(&self) -> Self::Id { self.id }
-    fn scope(&self) -> Self::Scope { self.scope }
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn scope(&self) -> Self::Scope {
+        self.scope
+    }
 }
 
-let layer = ProvideAuthenticationLayer::<AppUser>::new()
-    .with_backend(MyBackend)
-    .with_memory_store();
+struct AppBackend;
+
+impl Backend for AppBackend {
+    type Credentials = (String, String);
+    type User = AppUser;
+    type Error = Infallible;
+
+    fn get(
+        &self,
+        _id: i64,
+    ) -> impl Future<Output = Result<Option<Self::User>, Self::Error>> + Send {
+        std::future::ready(Ok(None))
+    }
+
+    fn authenticate(
+        &self,
+        _credentials: Self::Credentials,
+    ) -> impl Future<Output = Result<Option<Self::User>, Self::Error>> + Send {
+        std::future::ready(Ok(None))
+    }
+}
+
+// Without an explicit store, the layer uses NoopStore. Configure a custom
+// Store or call with_memory_store() when sessions should survive requests.
+let _layer = ProvideAuthenticationLayer::new().with_backend(AppBackend);
 ```
 
-### feature flags
+Backend and store methods use return-position `impl Future`, so implementations
+do not need to name, box, or erase their futures. The authentication layer shares
+backend and store values through `Arc`, therefore neither implementation needs
+to be `Clone`.
 
-- `axum`: enables Axum extractors and response integration.
-- `session-local`: keeps the current session in `tokio` task-local storage.
-- `memory-store`: enables the moka-backed in-memory `store::MemoryStore`.
-- `password`: enables the `Password` helper type.
-- `serde`: enables serialization support for `Password` and generated
+## Login and logout
+
+Request handlers obtain the `Authentication` handle from request extensions,
+or as an Axum extractor when the `axum` feature is enabled.
+`Authentication::authenticate` validates credentials, `Authentication::login`
+creates and persists a session, and `Authentication::logout` revokes it.
+
+A returned `Session` can be added to an Axum response. Its response-parts
+implementation writes the secure, HTTP-only `session` cookie.
+
+## Authorization
+
+The `authorization` module provides Tower middleware for rejecting requests
+without an acceptable authenticated session:
+
+- `RequireAuthenticated` accepts any authenticated user;
+- `RequireScope` requires a complete permission scope;
+- `AuthorizeFn` adapts a closure;
+- `RequireAuthorizationLayer` accepts a custom `Authorize` implementation.
+
+Extension traits are provided for `tower::ServiceBuilder`, and for Axum routers
+and method routers when the `axum` feature is enabled.
+
+## Permission scopes
+
+The `scope!` macro defines a compact, `u64`-backed permission type. Generated
+scopes support aliases, lookup by name, iteration, set operations, raw `u64`
+conversion, and optional Serde and SQLx integration. Unknown raw bits are
+ignored when constructing or decoding a scope.
+
+## Passwords
+
+`Password` is a packed 64-byte salted SHA-256 value containing a 32-byte hash
+followed by a 32-byte salt. Plaintext comparisons recompute the hash and compare
+the packed representation in constant time. With `sqlx`, passwords are encoded
+directly as binary blobs.
+
+## Feature flags
+
+The default feature set enables `memory-store` and `session-local`.
+
+- `axum` enables extractors, response integration, and router extensions.
+- `memory-store` enables the Moka-backed `store::MemoryStore`.
+- `serde` enables serialization for `Password` and generated scopes.
+- `session-local` exposes the current session through `session::current` and
+  `session::try_current`.
+- `sqlx` enables database encoding and decoding for `Password` and generated
   scopes.
-- `sqlx`: enables database encoding/decoding support for `Password` and
-  generated scopes.
 
 ## license
 

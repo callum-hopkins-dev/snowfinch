@@ -27,14 +27,14 @@ where
     A: Authorize,
 {
     /// Creates a new authorization layer from an authorizer.
-    #[inline]
+    #[inline(always)]
     pub fn new(authorize: A) -> Self {
         Self(Arc::new(authorize))
     }
 }
 
 impl<A> Clone for RequireAuthorizationLayer<A> {
-    #[inline]
+    #[inline(always)]
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
@@ -46,7 +46,7 @@ where
 {
     type Service = RequireAuthorization<S, A>;
 
-    #[inline]
+    #[inline(always)]
     fn layer(&self, inner: S) -> Self::Service {
         RequireAuthorization {
             inner,
@@ -65,7 +65,7 @@ impl<S, A> Clone for RequireAuthorization<S, A>
 where
     S: Clone,
 {
-    #[inline]
+    #[inline(always)]
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -85,7 +85,7 @@ where
 
     type Future = RequireAuthorizationFuture<S::Future>;
 
-    #[inline]
+    #[inline(always)]
     fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
@@ -119,11 +119,12 @@ pub enum RequireAuthorizationResponse<R> {
 }
 
 #[cfg(feature = "axum")]
+#[cfg_attr(docsrs, doc(cfg(feature = "axum")))]
 impl<R> axum::response::IntoResponse for RequireAuthorizationResponse<R>
 where
     R: axum::response::IntoResponse,
 {
-    #[inline]
+    #[inline(always)]
     fn into_response(self) -> axum::response::Response {
         match self {
             RequireAuthorizationResponse::NotAuthorized => {
@@ -159,7 +160,7 @@ where
 {
     type Output = Result<RequireAuthorizationResponse<T>, E>;
 
-    #[inline]
+    #[inline(always)]
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         match self.project().inner.project() {
             RequireAuthorizationFutureProj::NotAuthorized => {
@@ -185,7 +186,7 @@ where
     F: Fn(&User) -> bool,
 {
     /// Wraps a closure as an authorizer.
-    #[inline]
+    #[inline(always)]
     pub const fn new(f: F) -> Self {
         Self(f, PhantomData)
     }
@@ -198,7 +199,7 @@ where
 {
     type User = User;
 
-    #[inline]
+    #[inline(always)]
     fn authorize(&self, user: &Self::User) -> bool {
         (self.0)(user)
     }
@@ -215,7 +216,7 @@ where
     User: crate::User,
 {
     /// Creates an authorizer that requires only an authenticated session.
-    #[inline]
+    #[inline(always)]
     pub const fn new() -> Self {
         Self(PhantomData)
     }
@@ -227,7 +228,7 @@ where
 {
     type User = User;
 
-    #[inline]
+    #[inline(always)]
     fn authorize(&self, _user: &Self::User) -> bool {
         true
     }
@@ -244,7 +245,7 @@ where
     User: crate::User,
 {
     /// Creates an authorizer requiring `scope`.
-    #[inline]
+    #[inline(always)]
     pub const fn new(scope: User::Scope) -> Self {
         Self(scope)
     }
@@ -256,7 +257,7 @@ where
 {
     type User = User;
 
-    #[inline]
+    #[inline(always)]
     fn authorize(&self, user: &Self::User) -> bool {
         user.scope().contains(&self.0)
     }
@@ -273,7 +274,7 @@ pub trait ServiceBuilderExt<L> {
         A: Authorize;
 
     /// Adds an authorization layer backed by a closure.
-    #[inline]
+    #[inline(always)]
     fn require_authorization_fn<User, F>(
         self,
         f: F,
@@ -287,7 +288,7 @@ pub trait ServiceBuilderExt<L> {
     }
 
     /// Requires requests to include an authenticated session.
-    #[inline]
+    #[inline(always)]
     fn require_authenticated<User>(
         self,
     ) -> ServiceBuilder<Stack<RequireAuthorizationLayer<RequireAuthenticated<User>>, L>>
@@ -299,7 +300,7 @@ pub trait ServiceBuilderExt<L> {
     }
 
     /// Requires the authenticated user to contain `scope`.
-    #[inline]
+    #[inline(always)]
     fn require_scope<User>(
         self,
         scope: User::Scope,
@@ -313,7 +314,7 @@ pub trait ServiceBuilderExt<L> {
 }
 
 impl<L> ServiceBuilderExt<L> for ServiceBuilder<L> {
-    #[inline]
+    #[inline(always)]
     fn require_authorization<A>(
         self,
         authorize: A,
@@ -333,7 +334,7 @@ pub trait RouterExt {
         A: Authorize;
 
     /// Adds a closure-backed authorization layer to every route in the router.
-    #[inline]
+    #[inline(always)]
     fn require_authorization_fn<User, F>(self, f: F) -> Self
     where
         User: crate::User,
@@ -344,7 +345,7 @@ pub trait RouterExt {
     }
 
     /// Requires every route in the router to have an authenticated session.
-    #[inline]
+    #[inline(always)]
     fn require_authenticated<User>(self) -> Self
     where
         User: crate::User,
@@ -354,7 +355,7 @@ pub trait RouterExt {
     }
 
     /// Requires every route in the router to contain `scope`.
-    #[inline]
+    #[inline(always)]
     fn require_scope<User>(self, scope: User::Scope) -> Self
     where
         User: crate::User,
@@ -370,7 +371,7 @@ impl<S> RouterExt for axum::Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    #[inline]
+    #[inline(always)]
     fn require_authorization<A>(self, authorize: A) -> Self
     where
         A: Authorize,
@@ -387,7 +388,7 @@ pub trait MethodRouterExt {
         A: Authorize;
 
     /// Adds a closure-backed authorization layer to this method router.
-    #[inline]
+    #[inline(always)]
     fn require_authorization_fn<User, F>(self, f: F) -> Self
     where
         User: crate::User,
@@ -398,7 +399,7 @@ pub trait MethodRouterExt {
     }
 
     /// Requires this method router to have an authenticated session.
-    #[inline]
+    #[inline(always)]
     fn require_authenticated<User>(self) -> Self
     where
         User: crate::User,
@@ -408,7 +409,7 @@ pub trait MethodRouterExt {
     }
 
     /// Requires this method router to contain `scope`.
-    #[inline]
+    #[inline(always)]
     fn require_scope<User>(self, scope: User::Scope) -> Self
     where
         User: crate::User,
@@ -424,11 +425,145 @@ impl<S> MethodRouterExt for axum::routing::MethodRouter<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    #[inline]
+    #[inline(always)]
     fn require_authorization<A>(self, authorize: A) -> Self
     where
         A: Authorize,
     {
         self.layer(RequireAuthorizationLayer::new(authorize))
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod tests {
+    use std::{
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use chrono::{Days, Utc};
+    use tower::{Layer, ServiceExt, service_fn};
+
+    use crate::{Session, User, scope};
+
+    use super::{
+        RequireAuthenticated, RequireAuthorizationLayer, RequireAuthorizationResponse, RequireScope,
+    };
+
+    scope! {
+        enum Permissions {
+            Read = 0,
+            Write = 1,
+        }
+    }
+
+    struct Account {
+        id: u64,
+        scope: Permissions,
+    }
+
+    impl User for Account {
+        type Scope = Permissions;
+        type Id = u64;
+
+        #[inline(always)]
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+
+        #[inline(always)]
+        fn scope(&self) -> Self::Scope {
+            self.scope
+        }
+    }
+
+    #[test]
+    fn rejects_missing_sessions_without_calling_inner_service() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let inner_calls = Arc::clone(&calls);
+            let service = RequireAuthorizationLayer::new(RequireAuthenticated::<Account>::new())
+                .layer(service_fn(move |_request: http::Request<()>| {
+                    let calls = Arc::clone(&inner_calls);
+
+                    async move {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        Ok::<_, Infallible>(())
+                    }
+                }));
+
+            let response = service.oneshot(http::Request::new(())).await.unwrap();
+
+            assert_eq!(response, RequireAuthorizationResponse::NotAuthorized);
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+        });
+    }
+
+    #[test]
+    fn requires_the_complete_requested_scope() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let layer = RequireAuthorizationLayer::new(RequireScope::<Account>::new(
+                Permissions::Read | Permissions::Write,
+            ));
+
+            let service = layer.layer(service_fn(|_request: http::Request<()>| async {
+                Ok::<_, Infallible>(42)
+            }));
+
+            let mut request = http::Request::new(());
+            request.extensions_mut().insert(Session::new(
+                1,
+                Utc::now() + Days::new(1),
+                Account {
+                    id: 7,
+                    scope: Permissions::Read,
+                },
+            ));
+
+            assert_eq!(
+                service.oneshot(request).await.unwrap(),
+                RequireAuthorizationResponse::NotAuthorized,
+            );
+
+            let service = layer.layer(service_fn(|_request: http::Request<()>| async {
+                Ok::<_, Infallible>(42)
+            }));
+
+            let mut request = http::Request::new(());
+            request.extensions_mut().insert(Session::new(
+                2,
+                Utc::now() + Days::new(1),
+                Account {
+                    id: 7,
+                    scope: Permissions::Read | Permissions::Write,
+                },
+            ));
+
+            assert_eq!(
+                service.oneshot(request).await.unwrap(),
+                RequireAuthorizationResponse::Authorized(42),
+            );
+        });
+    }
+    #[cfg(feature = "axum")]
+    #[test]
+    fn unauthorized_response_maps_to_401() {
+        use axum::response::IntoResponse;
+
+        let response = RequireAuthorizationResponse::<()>::NotAuthorized.into_response();
+
+        assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
     }
 }

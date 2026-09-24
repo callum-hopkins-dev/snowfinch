@@ -1,20 +1,33 @@
-//! Bitmap-backed permission scopes.
+//! Compact, bitmap-backed permission scopes.
 
 use std::{
     iter::FusedIterator,
     ops::{BitAnd, BitOr, BitXor, Not},
 };
 
-/// A bitmap-backed set of permissions.
+/// Error returned when a hexadecimal scope value cannot be decoded.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct ParseScopeError(#[from] const_hex::FromHexError);
+
+/// A bitmap-backed set of up to 64 permissions.
 ///
-/// Types implementing `Scope` are usually generated with the [`scope!`](crate::scope!) macro.
-/// Scope values are copyable, support bitwise set operations, and can be
-/// converted to and from a stable byte representation.
+/// Scope types are normally generated with [scope!](crate::scope!).
 pub trait Scope:
-    Copy + PartialEq + Eq + BitAnd + BitOr + BitXor + Not + Sized + Send + Sync + 'static
+    Copy
+    + PartialEq
+    + Eq
+    + BitAnd<Output = Self>
+    + BitOr<Output = Self>
+    + BitXor<Output = Self>
+    + Not<Output = Self>
+    + Sized
+    + Send
+    + Sync
+    + 'static
 {
-    /// Number of bitmap bits used by this scope type.
-    const BITS: u32;
+    /// Number of bits in the underlying representation.
+    const BITS: u32 = u64::BITS;
 
     /// The empty scope containing no flags.
     const EMPTY: Self;
@@ -26,36 +39,36 @@ pub trait Scope:
     const FLAGS: &'static [Flag<Self>];
 
     /// Looks up a declared flag or alias by name.
-    fn from_name(x: &str) -> Option<Self>;
+    fn from_name(name: &str) -> Option<Self>;
 
-    /// Returns `true` when no flags are set.
+    /// Returns true when no flags are set.
     fn is_empty(&self) -> bool;
 
-    /// Returns `true` when all primitive flags are set.
+    /// Returns true when all primitive flags are set.
     fn is_all(&self) -> bool;
 
-    /// Returns `true` when `self` and `other` have at least one flag in common.
+    /// Returns true when the scopes have at least one flag in common.
     fn intersects(&self, other: &Self) -> bool;
 
-    /// Returns `true` when `self` contains every flag in `other`.
+    /// Returns true when this scope contains every flag in other.
     fn contains(&self, other: &Self) -> bool;
 
-    /// Returns the flags present in both `self` and `other`.
+    /// Returns the flags present in both scopes.
     fn intersection(self, other: Self) -> Self;
 
-    /// Returns the flags present in either `self` or `other`.
+    /// Returns the flags present in either scope.
     fn union(self, other: Self) -> Self;
 
-    /// Returns the flags present in `self` but not in `other`.
+    /// Returns the flags present in this scope but not in other.
     fn difference(self, other: Self) -> Self;
 
-    /// Returns the flags present in exactly one of `self` or `other`.
+    /// Returns the flags present in exactly one of the two scopes.
     fn symmetric_difference(self, other: Self) -> Self;
 
-    /// Iterates over the names of flags contained in this scope.
+    /// Iterates over the names contained in this scope.
     fn names(&self) -> Names<Self>;
 
-    /// Iterates over the flag values contained in this scope.
+    /// Iterates over the values contained in this scope.
     fn values(&self) -> Values<Self>;
 }
 
@@ -68,19 +81,19 @@ pub struct Flag<T> {
 
 impl<T> Flag<T> {
     /// Creates flag metadata from a name and value.
-    #[inline]
+    #[inline(always)]
     pub const fn new(name: &'static str, value: T) -> Self {
         Self { name, value }
     }
 
     /// Returns the declared name of the flag or alias.
-    #[inline]
+    #[inline(always)]
     pub const fn name(&self) -> &'static str {
         self.name
     }
 
     /// Returns the scope value represented by this flag or alias.
-    #[inline]
+    #[inline(always)]
     pub const fn value(&self) -> &T {
         &self.value
     }
@@ -94,26 +107,23 @@ pub struct Names<T> {
 }
 
 impl<T> Names<T> {
-    /// Creates an iterator over the names contained in `value`.
-    #[inline]
+    /// Creates an iterator over the names contained in value.
+    #[inline(always)]
     pub const fn new(value: T) -> Self {
         Self { value, index: 0 }
     }
 }
 
-impl<T> Iterator for Names<T>
-where
-    T: Scope,
-{
+impl<T: Scope> Iterator for Names<T> {
     type Item = &'static str;
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.index < T::FLAGS.len() {
-            let other = T::FLAGS[self.index];
+            let flag = T::FLAGS[self.index];
             self.index += 1;
 
-            if self.value.contains(other.value()) {
-                return Some(other.name());
+            if self.value.contains(flag.value()) {
+                return Some(flag.name());
             }
         }
 
@@ -121,9 +131,9 @@ where
     }
 }
 
-impl<T> FusedIterator for Names<T> where T: Scope {}
+impl<T: Scope> FusedIterator for Names<T> {}
 
-/// Iterator over the individual flag values contained in a scope value.
+/// Iterator over the values contained in a scope value.
 #[derive(Debug, Clone)]
 pub struct Values<T> {
     value: T,
@@ -131,26 +141,23 @@ pub struct Values<T> {
 }
 
 impl<T> Values<T> {
-    /// Creates an iterator over the values contained in `value`.
-    #[inline]
+    /// Creates an iterator over the values contained in value.
+    #[inline(always)]
     pub const fn new(value: T) -> Self {
         Self { value, index: 0 }
     }
 }
 
-impl<T> Iterator for Values<T>
-where
-    T: Scope,
-{
+impl<T: Scope> Iterator for Values<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.index < T::FLAGS.len() {
-            let other = T::FLAGS[self.index];
+            let flag = T::FLAGS[self.index];
             self.index += 1;
 
-            if self.value.contains(other.value()) {
-                return Some(*other.value());
+            if self.value.contains(flag.value()) {
+                return Some(*flag.value());
             }
         }
 
@@ -158,753 +165,546 @@ where
     }
 }
 
-impl<T> FusedIterator for Values<T> where T: Scope {}
+impl<T: Scope> FusedIterator for Values<T> {}
 
-/// Defines one or more bitmap-backed permission scope types.
-///
-/// The syntax resembles an enum declaration, but the macro generates a newtype
-/// struct with associated constants and set-like operations. Each primitive flag
-/// is declared with a numeric bit position, while aliases can be declared as a
-/// combination of other flags with `&&`.
-///
-/// # Example
-///
-/// ```rust
-/// use snowfinch::scope;
-///
-/// scope! {
-///     // Permissions for an example service.
-///     pub enum Permissions {
-///         // Permission to read data.
-///         Read = 0,
-///
-///         // Permission to write data.
-///         Write = 1,
-///
-///         // Read and write permissions.
-///         ReadWrite = Read && Write,
-///     }
-/// }
-///
-/// let scope = Permissions::Read | Permissions::Write;
-/// assert!(scope.contains(&Permissions::ReadWrite));
-/// assert_eq!(Permissions::from_name("Read"), Some(Permissions::Read));
-/// ```
-///
-/// The generated type implements [`Scope`], [`core::fmt::Debug`],
-/// [`core::str::FromStr`], bitwise set operators, and optional `serde`/`sqlx`
-/// traits when those crate features are enabled.
-#[macro_export]
-macro_rules! scope {
-    (
-        $(
-            $(#[$struct_meta:meta])*
-            $struct_vis:vis enum $struct_ident:ident {
-                $(
-                    $(#[$field_meta:meta])*
-                    $field_ident:ident = $($field_literal:literal)? $($field_idents:ident)&&*
-                ),* $(,)?
-            }
-        )+
-    ) => {
-        $(
-            #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-            #[repr(transparent)]
-            $(#[$struct_meta])*
-            $struct_vis struct $struct_ident([usize; { Self::BITS.div_ceil(usize::BITS) as usize }]);
-
-            $crate::__scope_impl_fields!($struct_ident, { $($(#[$field_meta])* $field_ident = $($field_literal)? $($field_idents)&&*),* });
-
-            $crate::__scope_impl_consts!($struct_ident, { $($field_ident = $($field_literal)? $($field_idents)&&*),* });
-
-            $crate::__scope_impl_methods!($struct_ident, { $($field_ident = $($field_literal)? $($field_idents)&&*),* });
-
-            $crate::__scope_impl_traits!($struct_ident);
-         )+
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_field {
-    ($(#[$field_meta:meta])* $struct_ident:ident, $ident:ident, $literal:literal) => {
-        $(#[$field_meta])*
-        #[doc = concat!("The `", ::core::stringify!($ident), "` scope flag.")]
-        pub const $ident: Self = {
-            let mut x = [0usize; _];
-            x[$literal / usize::BITS as usize] |= 1 << ($literal % usize::BITS as usize);
-            Self(x)
-        };
-    };
-
-    ($(#[$field_meta:meta])* $struct_ident:ident, $ident:ident, $($field_idents:ident)&&*) => {
-        $(#[$field_meta])*
-        #[doc = concat!("The `", ::core::stringify!($ident), "` scope alias.")]
-        pub const $ident: Self = {
-            let mut x = [0usize; _];
-            let mut i = 0;
-
-            while i < x.len() {
-                $(
-                    x[i] |= $struct_ident::$field_idents.0[i];
-                )*
-
-                i += 1;
-            }
-
-            Self(x)
-        };
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_fields {
-    ($struct_ident:ident, { $($(#[$field_meta:meta])* $field_ident:ident = $($field_literal:literal)? $($field_idents:ident)&&*),* }) => {
-        impl $struct_ident {
-            $(
-                $crate::__scope_impl_field!($(#[$field_meta])* $struct_ident, $field_ident, $($field_literal)? $($field_idents)&&*);
-            )*
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_bits {
-    ($struct_ident:ident, { $($field_ident:ident = $($field_literal:literal)? $($field_idents:ident)&&*),* }) => {
-        impl $struct_ident {
-            /// Number of bitmap bits used by this scope type.
-            pub const BITS: u32 = {
-                let k = [
-                    $($crate::__scope_impl_bits_size!(
-                        $($field_literal)?
-                        $($field_idents)&&*
-                    )),*
-                ];
-
-                let mut x = 0;
-                let mut i = 0;
-
-                while i < k.len() {
-                    x = if x > k[i] { x } else { k[i] };
-                    i += 1;
-                }
-
-                x
-            };
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_bits_size {
-    ($literal:literal) => {
-        $literal as u32
-    };
-
-    ($($field_idents:ident)&&*) => {
-        0u32
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_all {
-    ($struct_ident:ident, { $($field_ident:ident = $($field_literal:literal)? $($field_idents:ident)&&*),* }) => {
-        impl $struct_ident {
-            /// Scope value containing every primitive flag declared for this type.
-            pub const ALL: Self = {
-                let mut x = [0usize; _];
-                let mut i = 0;
-
-                while i < x.len() {
-                    $(
-                        x[i] |= $crate::__scope_impl_all_bits!(
-                            $struct_ident,
-                            i,
-                            $field_ident,
-                            $($field_literal)? $($field_idents)&&*
-                        );
-                    )*
-
-                    i += 1;
-                }
-
-                Self(x)
-            };
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_all_bits {
-    ($struct_ident:ident, $i:expr, $ident:ident, $literal:literal) => {
-        $struct_ident::$ident.0[$i]
-    };
-
-    ($struct_ident:ident, $i:expr, $ident:ident, $($field_idents:ident)&&*) => {
-        0usize
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_empty {
-    ($struct_ident:ident, $tt:tt) => {
-        impl $struct_ident {
-            /// Empty scope value containing no flags.
-            pub const EMPTY: Self = Self([0usize; _]);
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_flags {
-    ($struct_ident:ident, { $($field_ident:ident = $($field_literal:literal)? $($field_idents:ident)&&*),* }) => {
-        impl $struct_ident {
-            /// Metadata for every declared flag and alias.
-            pub const FLAGS: &'static [$crate::scope::Flag<Self>] = &[
-                $(
-                    $crate::scope::Flag::new(
-                        ::core::stringify!($field_ident),
-                        Self::$field_ident,
-                    )
-                ),*
-            ];
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_consts {
-    ($($tt:tt)*) => {
-        $crate::__scope_impl_bits!($($tt)*);
-        $crate::__scope_impl_empty!($($tt)*);
-        $crate::__scope_impl_all!($($tt)*);
-        $crate::__scope_impl_flags!($($tt)*);
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_from_bytes {
-    ($struct_ident:ident, $tt:tt) => {
-        impl $struct_ident {
-            /// Builds a scope from its little-endian byte representation.
-            ///
-            /// Bits that are not part of [`Self::ALL`] are ignored.
-            #[inline]
-            pub const fn from_bytes(x: [u8; { ::core::mem::size_of::<Self>() }]) -> Self {
-                let mut k = [0usize; _];
-                let mut i = 0;
-
-                let c = x.as_chunks().0;
-
-                while i < k.len() {
-                    k[i] = Self::ALL.0[i] & usize::from_le_bytes(c[i]);
-                    i += 1;
-                }
-
-                Self(k)
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_to_bytes {
-    ($struct_ident:ident, $tt:tt) => {
-        impl $struct_ident {
-            /// Converts this scope to its little-endian byte representation.
-            #[inline]
-            pub const fn to_bytes(self) -> [u8; { ::core::mem::size_of::<Self>() }] {
-                let mut x = [0u8; _];
-                let mut i = 0;
-
-                let c = x.as_chunks_mut().0;
-
-                while i < c.len() {
-                    c[i] = self.0[i].to_le_bytes();
-                    i += 1;
-                }
-
-                x
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_from_name {
-    ($struct_ident:ident, { $($field_ident:ident = $($field_literal:literal)? $($field_idents:ident)&&*),* }) => {
-        impl $struct_ident {
-            /// Looks up a declared flag or alias by name.
-            #[inline]
-            pub const fn from_name(x: &str) -> Option<Self> {
-                $(
-                    const $field_ident: &'static [u8] = ::core::stringify!($field_ident).as_bytes();
-                )*
-
-                match x.as_bytes() {
-                    $(
-                        $field_ident => Some(Self::$field_ident),
-                    )*
-
-                    _ => None,
-                }
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_cmp {
-    ($struct_ident:ident, $tt:tt) => {
-        impl $struct_ident {
-            /// Returns `true` when `self` and `other` contain the same flags.
-            #[inline]
-            pub const fn eq(&self, other: &Self) -> bool {
-                let mut i = 0;
-                let mut x = true;
-
-                while i < self.0.len() {
-                    x = x && self.0[i] == other.0[i];
-                    i += 1;
-                }
-
-                x
-            }
-
-            /// Returns `true` when this scope contains no flags.
-            #[inline]
-            pub const fn is_empty(&self) -> bool {
-                self.eq(&Self::EMPTY)
-            }
-
-            /// Returns `true` when this scope contains every primitive flag.
-            #[inline]
-            pub const fn is_all(&self) -> bool {
-                self.eq(&Self::ALL)
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_boolean {
-    ($struct_ident:ident, $tt:tt) => {
-        impl $struct_ident {
-            /// Returns `true` when `self` and `other` share at least one flag.
-            #[inline]
-            pub const fn intersects(&self, other: &Self) -> bool {
-                let mut i = 0;
-                let mut x = false;
-
-                while i < self.0.len() {
-                    x = x || self.0[i] & other.0[i] != 0;
-                    i += 1;
-                }
-
-                x
-            }
-
-            /// Returns `true` when this scope contains every flag in `other`.
-            #[inline]
-            pub const fn contains(&self, other: &Self) -> bool {
-                let mut i = 0;
-                let mut x = true;
-
-                while i < self.0.len() {
-                    x = x && self.0[i] & other.0[i] == other.0[i];
-                    i += 1;
-                }
-
-                x
-            }
-
-            /// Returns the flags present in both scopes.
-            #[inline]
-            pub const fn intersection(self, other: Self) -> Self {
-                let mut x = Self::EMPTY;
-                let mut i = 0;
-
-                while i < self.0.len() {
-                    x.0[i] = self.0[i] & other.0[i];
-                    i += 1;
-                }
-
-                x
-            }
-
-            /// Returns the flags present in either scope.
-            #[inline]
-            pub const fn union(self, other: Self) -> Self {
-                let mut x = Self::EMPTY;
-                let mut i = 0;
-
-                while i < self.0.len() {
-                    x.0[i] = self.0[i] | other.0[i];
-                    i += 1;
-                }
-
-                x
-            }
-
-            /// Returns the flags present in `self` but not in `other`.
-            #[inline]
-            pub const fn difference(self, other: Self) -> Self {
-                let mut x = Self::EMPTY;
-                let mut i = 0;
-
-                while i < self.0.len() {
-                    x.0[i] = self.0[i] & !other.0[i];
-                    i += 1;
-                }
-
-                x
-            }
-
-            /// Returns the flags present in exactly one of the two scopes.
-            #[inline]
-            pub const fn symmetric_difference(self, other: Self) -> Self {
-                let mut x = Self::EMPTY;
-                let mut i = 0;
-
-                while i < self.0.len() {
-                    x.0[i] = self.0[i] ^ other.0[i];
-                    i += 1;
-                }
-
-                x
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_iter {
-    ($struct_ident:ident, $tt:tt) => {
-        impl $struct_ident {
-            /// Iterates over the names of flags contained in this scope.
-            #[inline]
-            pub const fn names(&self) -> $crate::scope::Names<Self> {
-                $crate::scope::Names::new(*self)
-            }
-
-            /// Iterates over the flag values contained in this scope.
-            #[inline]
-            pub const fn values(&self) -> $crate::scope::Values<Self> {
-                $crate::scope::Values::new(*self)
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_methods {
-    ($($tt:tt)*) => {
-        $crate::__scope_impl_to_bytes!($($tt)*);
-
-        $crate::__scope_impl_from_bytes!($($tt)*);
-        $crate::__scope_impl_from_name!($($tt)*);
-
-        $crate::__scope_impl_cmp!($($tt)*);
-        $crate::__scope_impl_boolean!($($tt)*);
-        $crate::__scope_impl_iter!($($tt)*);
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_debug {
-    ($struct_ident:ident) => {
-        impl ::core::fmt::Debug for $struct_ident {
-            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                f.write_str(::core::stringify!($struct_ident))?;
-                f.write_str("(")?;
-
-                for (index, name) in self.names().enumerate() {
-                    if index != 0 {
-                        f.write_str(" && ")?;
-                    }
-
-                    f.write_str(name)?;
-                }
-
-                f.write_str(")")?;
-
-                Ok(())
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_from_str {
-    ($struct_ident:ident) => {
-        impl ::core::str::FromStr for $struct_ident {
-            type Err = $crate::Error;
-
-            fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
-                $crate::scope::__macro::const_hex::decode_to_array(s.as_bytes())
-                    .map(Self::from_bytes)
-                    .map_err($crate::Error::from)
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_ops {
-    ($struct_ident:ident) => {
-        impl ::core::ops::BitAnd for $struct_ident {
-            type Output = Self;
-
-            #[inline]
-            fn bitand(self, rhs: Self) -> Self::Output {
-                self.intersection(rhs)
-            }
-        }
-
-        impl ::core::ops::BitOr for $struct_ident {
-            type Output = Self;
-
-            #[inline]
-            fn bitor(self, rhs: Self) -> Self::Output {
-                self.union(rhs)
-            }
-        }
-
-        impl ::core::ops::BitXor for $struct_ident {
-            type Output = Self;
-
-            #[inline]
-            fn bitxor(self, rhs: Self) -> Self::Output {
-                self.symmetric_difference(rhs)
-            }
-        }
-
-        impl ::core::ops::Not for $struct_ident {
-            type Output = Self;
-
-            #[inline]
-            fn not(self) -> Self::Output {
-                Self::ALL.difference(self)
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_scope {
-    ($struct_ident:ident) => {
-        impl $crate::scope::Scope for $struct_ident {
-            const BITS: u32 = Self::BITS;
-
-            const EMPTY: Self = Self::EMPTY;
-
-            const ALL: Self = Self::ALL;
-
-            const FLAGS: &'static [$crate::scope::Flag<Self>] = Self::FLAGS;
-
-            #[inline]
-            fn from_name(x: &str) -> Option<Self> {
-                Self::from_name(x)
-            }
-
-            #[inline]
-            fn is_empty(&self) -> bool {
-                self.is_empty()
-            }
-
-            #[inline]
-            fn is_all(&self) -> bool {
-                self.is_all()
-            }
-
-            #[inline]
-            fn intersects(&self, other: &Self) -> bool {
-                self.intersects(other)
-            }
-
-            #[inline]
-            fn contains(&self, other: &Self) -> bool {
-                self.contains(other)
-            }
-
-            #[inline]
-            fn intersection(self, other: Self) -> Self {
-                self.intersection(other)
-            }
-
-            #[inline]
-            fn union(self, other: Self) -> Self {
-                self.union(other)
-            }
-
-            #[inline]
-            fn difference(self, other: Self) -> Self {
-                self.difference(other)
-            }
-
-            #[inline]
-            fn symmetric_difference(self, other: Self) -> Self {
-                self.symmetric_difference(other)
-            }
-
-            #[inline]
-            fn names(&self) -> $crate::scope::Names<Self> {
-                self.names()
-            }
-
-            #[inline]
-            fn values(&self) -> $crate::scope::Values<Self> {
-                self.values()
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
 #[cfg(feature = "serde")]
+#[doc(hidden)]
+#[macro_export]
 macro_rules! __scope_impl_serde {
-    ($struct_ident:ident) => {
-        impl $crate::scope::__macro::serde::Serialize for $struct_ident {
+    ($scope:ident) => {
+        impl $crate::scope::__private::serde::Serialize for $scope {
             fn serialize<S>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error>
             where
-                S: $crate::scope::__macro::serde::Serializer,
+                S: $crate::scope::__private::serde::Serializer,
             {
-                <str as $crate::scope::__macro::serde::Serialize>::serialize(
-                    $crate::scope::__macro::const_hex::Buffer::<_, true>::new()
-                        .const_format(&self.to_bytes())
+                <str as $crate::scope::__private::serde::Serialize>::serialize(
+                    $crate::scope::__private::const_hex::Buffer::<_, true>::new()
+                        .const_format(&self.to_raw().to_le_bytes())
                         .as_str(),
                     serializer,
                 )
             }
         }
 
-        impl<'de> $crate::scope::__macro::serde::Deserialize<'de> for $struct_ident {
+        impl<'de> $crate::scope::__private::serde::Deserialize<'de> for $scope {
             fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>
             where
-                D: $crate::scope::__macro::serde::Deserializer<'de>,
+                D: $crate::scope::__private::serde::Deserializer<'de>,
             {
-                <&str as $crate::scope::__macro::serde::Deserialize>::deserialize(deserializer)
-                    .and_then(|x| {
-                        <Self as ::core::str::FromStr>::from_str(x).map_err(|err| {
-                            <D::Error as $crate::scope::__macro::serde::de::Error>::custom(err)
-                        })
+                <&str as $crate::scope::__private::serde::Deserialize>::deserialize(deserializer)
+                    .and_then(|value| {
+                        <Self as ::core::str::FromStr>::from_str(value).map_err(
+                            <D::Error as $crate::scope::__private::serde::de::Error>::custom,
+                        )
                     })
             }
         }
     };
 }
 
-#[macro_export]
-#[doc(hidden)]
 #[cfg(not(feature = "serde"))]
+#[doc(hidden)]
+#[macro_export]
 macro_rules! __scope_impl_serde {
-    ($struct_ident:ident) => {};
+    ($scope:ident) => {};
 }
 
-#[macro_export]
-#[doc(hidden)]
 #[cfg(feature = "sqlx")]
+#[doc(hidden)]
+#[macro_export]
 macro_rules! __scope_impl_sqlx {
-    ($struct_ident:ident) => {
-        impl<D> $crate::scope::__macro::sqlx::Type<D> for $struct_ident
+    ($scope:ident) => {
+        impl<D> $crate::scope::__private::sqlx::Type<D> for $scope
         where
-            D: $crate::scope::__macro::sqlx::Database,
-            ::std::string::String: $crate::scope::__macro::sqlx::Type<D>,
+            D: $crate::scope::__private::sqlx::Database,
+            i64: $crate::scope::__private::sqlx::Type<D>,
         {
-            #[inline]
-            fn type_info() -> <D as $crate::scope::__macro::sqlx::Database>::TypeInfo {
-                <::std::string::String as $crate::scope::__macro::sqlx::Type<D>>::type_info()
+            #[inline(always)]
+            fn type_info() -> <D as $crate::scope::__private::sqlx::Database>::TypeInfo {
+                <i64 as $crate::scope::__private::sqlx::Type<D>>::type_info()
+            }
+
+            #[inline(always)]
+            fn compatible(ty: &D::TypeInfo) -> bool {
+                <i64 as $crate::scope::__private::sqlx::Type<D>>::compatible(ty)
             }
         }
 
-        impl<'q, D> $crate::scope::__macro::sqlx::Encode<'q, D> for $struct_ident
+        impl<'q, D> $crate::scope::__private::sqlx::Encode<'q, D> for $scope
         where
-            D: $crate::scope::__macro::sqlx::Database,
-            ::std::string::String: $crate::scope::__macro::sqlx::Encode<'q, D>,
+            D: $crate::scope::__private::sqlx::Database,
+            i64: $crate::scope::__private::sqlx::Encode<'q, D>,
         {
+            #[inline(always)]
             fn encode_by_ref(
                 &self,
-                buf: &mut D::ArgumentBuffer<'q>,
+                buffer: &mut D::ArgumentBuffer<'q>,
             ) -> ::core::result::Result<
-                $crate::scope::__macro::sqlx::encode::IsNull,
-                $crate::scope::__macro::sqlx::error::BoxDynError,
+                $crate::scope::__private::sqlx::encode::IsNull,
+                $crate::scope::__private::sqlx::error::BoxDynError,
             > {
-                $crate::scope::__macro::const_hex::Buffer::<_, false>::new()
-                    .const_format(&self.to_bytes())
-                    .as_str()
-                    .to_owned()
-                    .encode(buf)
+                <i64 as $crate::scope::__private::sqlx::Encode<'q, D>>::encode_by_ref(
+                    &(self.to_raw() as i64),
+                    buffer,
+                )
+            }
+
+            #[inline(always)]
+            fn produces(&self) -> Option<D::TypeInfo> {
+                <i64 as $crate::scope::__private::sqlx::Encode<'q, D>>::produces(
+                    &(self.to_raw() as i64),
+                )
+            }
+
+            #[inline(always)]
+            fn size_hint(&self) -> usize {
+                <i64 as $crate::scope::__private::sqlx::Encode<'q, D>>::size_hint(
+                    &(self.to_raw() as i64),
+                )
             }
         }
 
-        impl<'r, D> $crate::scope::__macro::sqlx::Decode<'r, D> for $struct_ident
+        impl<'r, D> $crate::scope::__private::sqlx::Decode<'r, D> for $scope
         where
-            D: $crate::scope::__macro::sqlx::Database,
-            ::std::string::String: $crate::scope::__macro::sqlx::Decode<'r, D>,
+            D: $crate::scope::__private::sqlx::Database,
+            i64: $crate::scope::__private::sqlx::Decode<'r, D>,
         {
+            #[inline(always)]
             fn decode(
                 value: D::ValueRef<'r>,
-            ) -> ::core::result::Result<Self, $crate::scope::__macro::sqlx::error::BoxDynError>
+            ) -> ::core::result::Result<Self, $crate::scope::__private::sqlx::error::BoxDynError>
             {
-                <::std::string::String as $crate::scope::__macro::sqlx::Decode<'r, D>>::decode(
-                    value,
-                )
-                .and_then(|x| {
-                    <Self as ::core::str::FromStr>::from_str(&x).map_err(|err| Box::new(err).into())
-                })
+                <i64 as $crate::scope::__private::sqlx::Decode<'r, D>>::decode(value)
+                    .map(|raw| Self::from_raw(raw as u64))
             }
         }
     };
 }
 
-#[macro_export]
-#[doc(hidden)]
 #[cfg(not(feature = "sqlx"))]
+#[doc(hidden)]
+#[macro_export]
 macro_rules! __scope_impl_sqlx {
-    ($struct_ident:ident) => {};
+    ($scope:ident) => {};
 }
 
+/// Defines one or more bitmap-backed permission scope types.
+///
+/// Primitive flags use bit positions from 0 through 63. Aliases combine
+/// existing flags with &&.
+///
+/// ```
+/// use snowfinch::{Scope, scope};
+///
+/// scope! {
+///     pub enum Permissions {
+///         Read = 0,
+///         Write = 1,
+///         ReadWrite = Read && Write,
+///     }
+/// }
+///
+/// let permissions = Permissions::Read | Permissions::Write;
+/// assert!(permissions.contains(&Permissions::ReadWrite));
+/// assert_eq!(Permissions::from_name("Read"), Some(Permissions::Read));
+/// assert_eq!(
+///     permissions.names().collect::<Vec<_>>(),
+///     ["Read", "Write", "ReadWrite"],
+/// );
+/// ```
 #[macro_export]
-#[doc(hidden)]
-macro_rules! __scope_impl_traits {
-    ($struct_ident:ident) => {
-        $crate::__scope_impl_scope!($struct_ident);
-        $crate::__scope_impl_ops!($struct_ident);
-        $crate::__scope_impl_debug!($struct_ident);
-        $crate::__scope_impl_from_str!($struct_ident);
+macro_rules! scope {
+    (@field $scope:ident, $(#[$meta:meta])* $name:ident, $position:literal) => {
+        $(#[$meta])*
+        #[doc = concat!("The `", ::core::stringify!($name), "` scope flag.")]
+        pub const $name: Self = Self(match 1u64.checked_shl($position) {
+            Some(bits) => bits,
+            None => panic!(concat!(
+                "scope bit `",
+                ::core::stringify!($position),
+                "` is outside 0..64",
+            )),
+        });
+    };
 
-        $crate::__scope_impl_serde!($struct_ident);
-        $crate::__scope_impl_sqlx!($struct_ident);
+    (@field $scope:ident, $(#[$meta:meta])* $name:ident, $($member:ident)&&+) => {
+        $(#[$meta])*
+        #[doc = concat!("The `", ::core::stringify!($name), "` scope alias.")]
+        pub const $name: Self = Self(0 $(| $scope::$member.0)+);
+    };
+
+    (
+        $(
+            $(#[$scope_meta:meta])*
+            $visibility:vis enum $scope:ident {
+                $(
+                    $(#[$field_meta:meta])*
+                    $field:ident = $($position:literal)? $($member:ident)&&*
+                ),* $(,)?
+            }
+        )+
+    ) => {
+        $(
+            #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+            $(#[$scope_meta])*
+            #[repr(transparent)]
+            $visibility struct $scope(u64);
+
+            #[allow(non_upper_case_globals)]
+            impl $scope {
+                $(
+                    $crate::scope!(
+                        @field
+                        $scope,
+                        $(#[$field_meta])*
+                        $field,
+                        $($position)?
+                        $($member)&&*
+                    );
+                )*
+
+                /// Number of bits in the underlying representation.
+                pub const BITS: u32 = u64::BITS;
+
+                /// Empty scope value containing no flags.
+                pub const EMPTY: Self = Self(0);
+
+                /// Scope value containing every primitive flag declared for this type.
+                pub const ALL: Self = Self(
+                    0 $(| $scope::$field.0)*
+                );
+
+                /// Metadata for every declared flag and alias.
+                pub const FLAGS: &'static [$crate::scope::Flag<Self>] = &[
+                    $(
+                        $crate::scope::Flag::new(
+                            ::core::stringify!($field),
+                            Self::$field,
+                        )
+                    ),*
+                ];
+
+                /// Returns the raw bitmap backing this scope.
+                #[inline(always)]
+                pub const fn to_raw(self) -> u64 {
+                    self.0
+                }
+
+                /// Builds a scope from a raw bitmap.
+                ///
+                /// Bits which do not belong to a declared primitive flag are ignored.
+                #[inline(always)]
+                pub const fn from_raw(raw: u64) -> Self {
+                    Self(raw & Self::ALL.0)
+                }
+
+                /// Looks up a declared flag or alias by name.
+                #[inline(always)]
+                pub const fn from_name(name: &str) -> Option<Self> {
+                    $(
+                        const $field: &'static [u8] = ::core::stringify!($field).as_bytes();
+                    )*
+
+                    match name.as_bytes() {
+                        $($field => Some(Self::$field),)*
+                        _ => None,
+                    }
+                }
+
+                /// Returns true when this scope contains no flags.
+                #[inline(always)]
+                pub const fn is_empty(&self) -> bool {
+                    self.0 == 0
+                }
+
+                /// Returns true when this scope contains every primitive flag.
+                #[inline(always)]
+                pub const fn is_all(&self) -> bool {
+                    self.0 == Self::ALL.0
+                }
+
+                /// Returns true when the scopes share at least one flag.
+                #[inline(always)]
+                pub const fn intersects(&self, other: &Self) -> bool {
+                    self.0 & other.0 != 0
+                }
+
+                /// Returns true when this scope contains every flag in other.
+                #[inline(always)]
+                pub const fn contains(&self, other: &Self) -> bool {
+                    self.0 & other.0 == other.0
+                }
+
+                /// Returns the flags present in both scopes.
+                #[inline(always)]
+                pub const fn intersection(self, other: Self) -> Self {
+                    Self(self.0 & other.0)
+                }
+
+                /// Returns the flags present in either scope.
+                #[inline(always)]
+                pub const fn union(self, other: Self) -> Self {
+                    Self(self.0 | other.0)
+                }
+
+                /// Returns the flags present in this scope but not in other.
+                #[inline(always)]
+                pub const fn difference(self, other: Self) -> Self {
+                    Self(self.0 & !other.0)
+                }
+
+                /// Returns the flags present in exactly one of the two scopes.
+                #[inline(always)]
+                pub const fn symmetric_difference(self, other: Self) -> Self {
+                    Self(self.0 ^ other.0)
+                }
+
+                /// Iterates over the names contained in this scope.
+                #[inline(always)]
+                pub const fn names(&self) -> $crate::scope::Names<Self> {
+                    $crate::scope::Names::new(*self)
+                }
+
+                /// Iterates over the values contained in this scope.
+                #[inline(always)]
+                pub const fn values(&self) -> $crate::scope::Values<Self> {
+                    $crate::scope::Values::new(*self)
+                }
+            }
+
+            impl $crate::scope::Scope for $scope {
+                const EMPTY: Self = Self::EMPTY;
+                const ALL: Self = Self::ALL;
+                const FLAGS: &'static [$crate::scope::Flag<Self>] = Self::FLAGS;
+
+                #[inline(always)]
+                fn from_name(name: &str) -> Option<Self> {
+                    Self::from_name(name)
+                }
+
+                #[inline(always)]
+                fn is_empty(&self) -> bool {
+                    self.is_empty()
+                }
+
+                #[inline(always)]
+                fn is_all(&self) -> bool {
+                    self.is_all()
+                }
+
+                #[inline(always)]
+                fn intersects(&self, other: &Self) -> bool {
+                    self.intersects(other)
+                }
+
+                #[inline(always)]
+                fn contains(&self, other: &Self) -> bool {
+                    self.contains(other)
+                }
+
+                #[inline(always)]
+                fn intersection(self, other: Self) -> Self {
+                    self.intersection(other)
+                }
+
+                #[inline(always)]
+                fn union(self, other: Self) -> Self {
+                    self.union(other)
+                }
+
+                #[inline(always)]
+                fn difference(self, other: Self) -> Self {
+                    self.difference(other)
+                }
+
+                #[inline(always)]
+                fn symmetric_difference(self, other: Self) -> Self {
+                    self.symmetric_difference(other)
+                }
+
+                #[inline(always)]
+                fn names(&self) -> $crate::scope::Names<Self> {
+                    self.names()
+                }
+
+                #[inline(always)]
+                fn values(&self) -> $crate::scope::Values<Self> {
+                    self.values()
+                }
+            }
+
+            impl ::core::ops::BitAnd for $scope {
+                type Output = Self;
+
+                #[inline(always)]
+                fn bitand(self, other: Self) -> Self {
+                    self.intersection(other)
+                }
+            }
+
+            impl ::core::ops::BitOr for $scope {
+                type Output = Self;
+
+                #[inline(always)]
+                fn bitor(self, other: Self) -> Self {
+                    self.union(other)
+                }
+            }
+
+            impl ::core::ops::BitXor for $scope {
+                type Output = Self;
+
+                #[inline(always)]
+                fn bitxor(self, other: Self) -> Self {
+                    self.symmetric_difference(other)
+                }
+            }
+
+            impl ::core::ops::Not for $scope {
+                type Output = Self;
+
+                #[inline(always)]
+                fn not(self) -> Self {
+                    Self::ALL.difference(self)
+                }
+            }
+
+            impl ::core::fmt::Debug for $scope {
+                fn fmt(
+                    &self,
+                    formatter: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    formatter.write_str(::core::stringify!($scope))?;
+                    formatter.write_str("(")?;
+
+                    for (index, name) in self.names().enumerate() {
+                        if index != 0 {
+                            formatter.write_str(" && ")?;
+                        }
+                        formatter.write_str(name)?;
+                    }
+
+                    formatter.write_str(")")
+                }
+            }
+
+            impl ::core::str::FromStr for $scope {
+                type Err = $crate::scope::ParseScopeError;
+
+                fn from_str(value: &str) -> ::core::result::Result<Self, Self::Err> {
+                    $crate::scope::__private::const_hex::decode_to_array(value.as_bytes())
+                        .map(u64::from_le_bytes)
+                        .map(Self::from_raw)
+                        .map_err($crate::scope::ParseScopeError::from)
+                }
+            }
+
+            $crate::__scope_impl_serde!($scope);
+            $crate::__scope_impl_sqlx!($scope);
+        )+
     };
 }
 
 #[doc(hidden)]
-pub mod __macro {
+pub mod __private {
+    pub use const_hex;
+
     #[cfg(feature = "serde")]
     pub use serde;
 
     #[cfg(feature = "sqlx")]
     pub use sqlx;
+}
 
-    pub use const_hex;
+#[cfg(test)]
+mod tests {
+    use super::ParseScopeError;
+
+    crate::scope! {
+        enum Permissions {
+            Read = 0,
+            Write = 1,
+            Audit = 63,
+            ReadWrite = Read && Write,
+        }
+
+        enum Secondary {
+            Enabled = 4,
+        }
+    }
+
+    #[test]
+    fn constants_and_metadata() {
+        assert_eq!(Permissions::BITS, 64);
+        assert!(Permissions::EMPTY.is_empty());
+        assert!(Permissions::ALL.is_all());
+        assert_eq!(Permissions::FLAGS.len(), 4);
+        assert_eq!(Permissions::FLAGS[3].name(), "ReadWrite");
+        assert_eq!(Permissions::FLAGS[3].value(), &Permissions::ReadWrite);
+        assert_eq!(Permissions::from_name("Audit"), Some(Permissions::Audit));
+        assert_eq!(Permissions::from_name("missing"), None);
+        assert_eq!(Secondary::from_name("Enabled"), Some(Secondary::Enabled));
+        assert_eq!(Secondary::BITS, 64);
+        assert_eq!(Secondary::Enabled.to_raw(), 16);
+    }
+
+    #[test]
+    fn set_operations_and_operators() {
+        let read_write = Permissions::Read | Permissions::Write;
+
+        assert!(read_write.contains(&Permissions::ReadWrite));
+        assert!(read_write.intersects(&Permissions::Read));
+        assert!(!read_write.intersects(&Permissions::Audit));
+        assert_eq!(read_write & Permissions::Read, Permissions::Read);
+        assert_eq!(read_write.difference(Permissions::Write), Permissions::Read,);
+        assert_eq!(read_write ^ Permissions::Read, Permissions::Write);
+        assert_eq!(!Permissions::Audit, Permissions::ReadWrite);
+    }
+
+    #[test]
+    fn raw_and_hex_round_trip() {
+        let value = Permissions::Read | Permissions::Audit;
+        let raw = (1 << 0) | (1 << 63);
+
+        assert_eq!(value.to_raw(), raw);
+        assert_eq!(Permissions::from_raw(raw), value);
+        assert_eq!("0100000000000080".parse::<Permissions>().unwrap(), value);
+        let error: ParseScopeError = "not hex".parse::<Permissions>().unwrap_err();
+        assert!(!error.to_string().is_empty());
+        assert_eq!(Permissions::from_raw(u64::MAX), Permissions::ALL);
+    }
+
+    #[test]
+    fn iteration_and_debug_include_aliases() {
+        let value = Permissions::ReadWrite;
+
+        assert_eq!(
+            value.names().collect::<Vec<_>>(),
+            ["Read", "Write", "ReadWrite"],
+        );
+        assert_eq!(
+            value.values().collect::<Vec<_>>(),
+            [
+                Permissions::Read,
+                Permissions::Write,
+                Permissions::ReadWrite,
+            ],
+        );
+        assert_eq!(
+            format!("{value:?}"),
+            "Permissions(Read && Write && ReadWrite)",
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn serde_traits_are_available() {
+        fn assert_serde<T>()
+        where
+            T: serde::Serialize + serde::de::DeserializeOwned,
+        {
+        }
+
+        assert_serde::<Permissions>();
+    }
 }
