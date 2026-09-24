@@ -118,7 +118,7 @@
 //! # Permission scopes
 //!
 //! The [`scope!`] macro defines a compact, `u64`-backed permission type.
-//! Generated scopes support aliases, lookup by name, iteration, set operations,
+//! Generated scopes support compound scopes, lookup by name, iteration, set operations,
 //! raw `u64` conversion, and optional Serde and SQLx integration. Unknown raw
 //! bits are ignored when constructing or decoding a scope.
 //!

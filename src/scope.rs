@@ -32,13 +32,13 @@ pub trait Scope:
     /// The empty scope containing no flags.
     const EMPTY: Self;
 
-    /// A scope containing every primitive flag declared for this type.
+    /// A scope containing every bit used by a declared scope.
     const ALL: Self;
 
-    /// Metadata for every declared flag and alias.
+    /// Metadata for every declared flag and compound scope.
     const FLAGS: &'static [Flag<Self>];
 
-    /// Looks up a declared flag or alias by name.
+    /// Looks up a declared flag or compound scope by name.
     fn from_name(name: &str) -> Option<Self>;
 
     /// Returns true when no flags are set.
@@ -72,7 +72,7 @@ pub trait Scope:
     fn values(&self) -> Values<Self>;
 }
 
-/// Metadata for a declared scope flag or alias.
+/// Metadata for a declared scope flag or compound scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Flag<T> {
     name: &'static str,
@@ -86,13 +86,13 @@ impl<T> Flag<T> {
         Self { name, value }
     }
 
-    /// Returns the declared name of the flag or alias.
+    /// Returns the declared name of the flag or compound scope.
     #[inline(always)]
     pub const fn name(&self) -> &'static str {
         self.name
     }
 
-    /// Returns the scope value represented by this flag or alias.
+    /// Returns the scope value represented by this flag or compound scope.
     #[inline(always)]
     pub const fn value(&self) -> &T {
         &self.value
@@ -290,8 +290,8 @@ macro_rules! __scope_impl_sqlx {
 
 /// Defines one or more bitmap-backed permission scope types.
 ///
-/// Primitive flags use bit positions from 0 through 63. Aliases combine
-/// existing flags with &&.
+/// Individual scopes use bit positions from 0 through 63. Compound scopes combine
+/// existing scopes and/or bit positions with `&&`.
 ///
 /// ```
 /// use snowfinch::{Scope, scope};
@@ -300,7 +300,7 @@ macro_rules! __scope_impl_sqlx {
 ///     pub enum Permissions {
 ///         Read = 0,
 ///         Write = 1,
-///         ReadWrite = Read && Write,
+///         ReadWrite = Read && 1,
 ///     }
 /// }
 ///
@@ -314,23 +314,33 @@ macro_rules! __scope_impl_sqlx {
 /// ```
 #[macro_export]
 macro_rules! scope {
-    (@field $scope:ident, $(#[$meta:meta])* $name:ident, $position:literal) => {
-        $(#[$meta])*
-        #[doc = concat!("The `", ::core::stringify!($name), "` scope flag.")]
-        pub const $name: Self = Self(match 1u64.checked_shl($position) {
+    (@component $scope:ident, $member:ident) => {
+        $scope::$member.0
+    };
+
+    (@component $scope:ident, $position:literal) => {
+        match 1u64.checked_shl($position) {
             Some(bits) => bits,
             None => panic!(concat!(
                 "scope bit `",
                 ::core::stringify!($position),
                 "` is outside 0..64",
             )),
-        });
+        }
     };
 
-    (@field $scope:ident, $(#[$meta:meta])* $name:ident, $($member:ident)&&+) => {
+    (@field $scope:ident, $(#[$meta:meta])* $name:ident, $position:literal) => {
         $(#[$meta])*
-        #[doc = concat!("The `", ::core::stringify!($name), "` scope alias.")]
-        pub const $name: Self = Self(0 $(| $scope::$member.0)+);
+        #[doc = concat!("The `", ::core::stringify!($name), "` scope flag.")]
+        pub const $name: Self = Self($crate::scope!(@component $scope, $position));
+    };
+
+    (@field $scope:ident, $(#[$meta:meta])* $name:ident, $($member:tt)&&+) => {
+        $(#[$meta])*
+        #[doc = concat!("The `", ::core::stringify!($name), "` compound scope.")]
+        pub const $name: Self = Self(
+            0 $(| $crate::scope!(@component $scope, $member))+
+        );
     };
 
     (
@@ -339,7 +349,7 @@ macro_rules! scope {
             $visibility:vis enum $scope:ident {
                 $(
                     $(#[$field_meta:meta])*
-                    $field:ident = $($position:literal)? $($member:ident)&&*
+                    $field:ident = $($member:tt)&&+
                 ),* $(,)?
             }
         )+
@@ -358,8 +368,7 @@ macro_rules! scope {
                         $scope,
                         $(#[$field_meta])*
                         $field,
-                        $($position)?
-                        $($member)&&*
+                        $($member)&&+
                     );
                 )*
 
@@ -369,12 +378,12 @@ macro_rules! scope {
                 /// Empty scope value containing no flags.
                 pub const EMPTY: Self = Self(0);
 
-                /// Scope value containing every primitive flag declared for this type.
+                /// Scope value containing every bit used by a declared scope.
                 pub const ALL: Self = Self(
                     0 $(| $scope::$field.0)*
                 );
 
-                /// Metadata for every declared flag and alias.
+                /// Metadata for every declared flag and compound scope.
                 pub const FLAGS: &'static [$crate::scope::Flag<Self>] = &[
                     $(
                         $crate::scope::Flag::new(
@@ -392,13 +401,13 @@ macro_rules! scope {
 
                 /// Builds a scope from a raw bitmap.
                 ///
-                /// Bits which do not belong to a declared primitive flag are ignored.
+                /// Bits which do not belong to a declared scope are ignored.
                 #[inline(always)]
                 pub const fn from_raw(raw: u64) -> Self {
                     Self(raw & Self::ALL.0)
                 }
 
-                /// Looks up a declared flag or alias by name.
+                /// Looks up a declared flag or compound scope by name.
                 #[inline(always)]
                 pub const fn from_name(name: &str) -> Option<Self> {
                     $(
@@ -417,7 +426,7 @@ macro_rules! scope {
                     self.0 == 0
                 }
 
-                /// Returns true when this scope contains every primitive flag.
+                /// Returns true when this scope contains every bit used by a declared scope.
                 #[inline(always)]
                 pub const fn is_all(&self) -> bool {
                     self.0 == Self::ALL.0
@@ -631,6 +640,12 @@ mod tests {
         enum Secondary {
             Enabled = 4,
         }
+
+        enum Compound {
+            Read = 0,
+            Mixed = Read && 2,
+            LiteralOnly = 3 && 4,
+        }
     }
 
     #[test]
@@ -646,6 +661,17 @@ mod tests {
         assert_eq!(Secondary::from_name("Enabled"), Some(Secondary::Enabled));
         assert_eq!(Secondary::BITS, 64);
         assert_eq!(Secondary::Enabled.to_raw(), 16);
+    }
+
+    #[test]
+    fn compound_scopes_accept_identifiers_and_literals() {
+        assert_eq!(Compound::BITS, 64);
+        assert_eq!(Compound::Mixed.to_raw(), (1 << 0) | (1 << 2));
+        assert_eq!(Compound::LiteralOnly.to_raw(), (1 << 3) | (1 << 4));
+        assert_eq!(
+            Compound::ALL.to_raw(),
+            (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4),
+        );
     }
 
     #[test]
@@ -675,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn iteration_and_debug_include_aliases() {
+    fn iteration_and_debug_include_compound_scopes() {
         let value = Permissions::ReadWrite;
 
         assert_eq!(
