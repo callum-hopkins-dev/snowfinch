@@ -14,33 +14,15 @@ use tower::{Layer, Service};
 use crate::{Session, User, store::CreateSessionError};
 
 /// A failure returned while authenticating credentials or mutating a session.
-#[derive(thiserror::Error)]
-pub enum AuthenticationError<Backend, Store>
-where
-    Backend: crate::Backend,
-    Store: crate::Store,
-{
+#[derive(Debug, thiserror::Error)]
+pub enum AuthenticationError {
     /// The authentication backend failed.
     #[error(transparent)]
-    Backend(Backend::Error),
+    Backend(Box<dyn std::error::Error + Send + Sync + 'static>),
 
     /// The session store failed.
     #[error(transparent)]
-    Store(Store::Error),
-}
-
-impl<Backend, Store> std::fmt::Debug for AuthenticationError<Backend, Store>
-where
-    Backend: crate::Backend,
-    Store: crate::Store,
-{
-    #[inline(always)]
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Backend(error) => formatter.debug_tuple("Backend").field(error).finish(),
-            Self::Store(error) => formatter.debug_tuple("Store").field(error).finish(),
-        }
-    }
+    Store(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 /// A cheaply cloned handle for authenticating users and managing sessions.
@@ -82,12 +64,12 @@ where
     pub async fn authenticate(
         &self,
         credentials: Backend::Credentials,
-    ) -> Result<Option<Backend::User>, AuthenticationError<Backend, Store>> {
+    ) -> Result<Option<Backend::User>, AuthenticationError> {
         self.0
             .backend
             .authenticate(credentials)
             .await
-            .map_err(AuthenticationError::Backend)
+            .map_err(|error| AuthenticationError::Backend(error.into()))
     }
 
     /// Creates and persists a session for `user`.
@@ -97,7 +79,7 @@ where
     pub async fn login(
         &self,
         user: Backend::User,
-    ) -> Result<Session<Backend::User>, AuthenticationError<Backend, Store>> {
+    ) -> Result<Session<Backend::User>, AuthenticationError> {
         let expires = Utc::now() + Days::new(30);
 
         loop {
@@ -121,7 +103,7 @@ where
                 }
                 Err(CreateSessionError::AlreadyExists) => {}
                 Err(CreateSessionError::Other(error)) => {
-                    return Err(AuthenticationError::Store(error));
+                    return Err(AuthenticationError::Store(error.into()));
                 }
             }
         }
@@ -129,15 +111,12 @@ where
 
     /// Revokes `session` and clears it from the session-local context.
     #[inline(always)]
-    pub async fn logout(
-        &self,
-        session: Session<Backend::User>,
-    ) -> Result<(), AuthenticationError<Backend, Store>> {
+    pub async fn logout(&self, session: Session<Backend::User>) -> Result<(), AuthenticationError> {
         self.0
             .store
             .revoke(session.id())
             .await
-            .map_err(AuthenticationError::Store)?;
+            .map_err(|error| AuthenticationError::Store(error.into()))?;
 
         crate::session::remove::<Backend::User>();
 
@@ -387,14 +366,23 @@ where
 {
     request.extensions_mut().insert(authentication.clone());
 
-    if let Some(id) = session_id(&request)
-        && let Ok(Some(stored)) = authentication.store().get(id).await
-        && stored.expires > Utc::now()
-        && let Ok(Some(user)) = authentication.backend().get(stored.user_id).await
-    {
-        let session = Session::new(stored.id, stored.expires, user);
-        crate::session::insert(&session);
-        request.extensions_mut().insert(session);
+    if let Some(id) = session_id(&request) {
+        let stored = authentication.store().get(id).await.ok().flatten();
+
+        if let Some(stored) = stored.filter(|stored| stored.expires > Utc::now()) {
+            let user = authentication
+                .backend()
+                .get(stored.user_id)
+                .await
+                .ok()
+                .flatten();
+
+            if let Some(user) = user {
+                let session = Session::new(stored.id, stored.expires, user);
+                crate::session::insert(&session);
+                request.extensions_mut().insert(session);
+            }
+        }
     }
 
     inner.call(request).await
@@ -463,10 +451,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone, Copy, thiserror::Error)]
-    #[error("{0}")]
-    struct TestError(&'static str);
-
     #[derive(Default)]
     struct Accounts {
         get_calls: Arc<AtomicUsize>,
@@ -478,7 +462,7 @@ mod tests {
     impl Backend for Accounts {
         type Credentials = ();
         type User = Account;
-        type Error = TestError;
+        type Error = String;
 
         #[inline(always)]
         fn get(
@@ -488,7 +472,7 @@ mod tests {
             self.get_calls.fetch_add(1, Ordering::Relaxed);
 
             std::future::ready(if self.fail_get {
-                Err(TestError("get"))
+                Err("get".to_owned())
             } else if self.missing {
                 Ok(None)
             } else {
@@ -502,7 +486,7 @@ mod tests {
             _credentials: Self::Credentials,
         ) -> impl Future<Output = Result<Option<Self::User>, Self::Error>> + Send {
             std::future::ready(if self.fail_authenticate {
-                Err(TestError("authenticate"))
+                Err("authenticate".to_owned())
             } else {
                 Ok(None)
             })
@@ -549,7 +533,7 @@ mod tests {
 
     impl Store for Sessions {
         type UserId = u64;
-        type Error = TestError;
+        type Error = String;
 
         #[inline(always)]
         fn get(
@@ -558,7 +542,7 @@ mod tests {
         ) -> impl Future<Output = Result<Option<StoredSession<Self::UserId>>, Self::Error>> + Send
         {
             std::future::ready(if self.fail_get {
-                Err(TestError("get"))
+                Err("get".to_owned())
             } else {
                 Ok(self
                     .state
@@ -578,7 +562,7 @@ mod tests {
             state.create_attempts += 1;
 
             let result = if self.fail_create {
-                Err(CreateSessionError::Other(TestError("create")))
+                Err(CreateSessionError::Other("create".to_owned()))
             } else if self.collide_once.swap(false, Ordering::Relaxed)
                 || state.session.is_some_and(|stored| stored.id == session.id)
             {
@@ -594,7 +578,7 @@ mod tests {
         #[inline(always)]
         fn revoke(&self, id: u128) -> impl Future<Output = Result<(), Self::Error>> + Send {
             if self.fail_revoke {
-                return std::future::ready(Err(TestError("revoke")));
+                return std::future::ready(Err("revoke".to_owned()));
             }
 
             let mut state = self.state.lock().unwrap();
@@ -682,10 +666,9 @@ mod tests {
             };
             let authentication = Authentication::new(backend, Sessions::default());
 
-            assert!(matches!(
-                authentication.authenticate(()).await,
-                Err(AuthenticationError::Backend(TestError("authenticate"))),
-            ));
+            let error = authentication.authenticate(()).await.unwrap_err();
+            assert!(matches!(&error, AuthenticationError::Backend(_)));
+            assert_eq!(error.to_string(), "authenticate");
 
             let store = Sessions {
                 fail_create: true,
@@ -693,10 +676,9 @@ mod tests {
             };
             let authentication = Authentication::new(Accounts::default(), store);
 
-            assert!(matches!(
-                authentication.login(Account { id: 7 }).await,
-                Err(AuthenticationError::Store(TestError("create"))),
-            ));
+            let error = authentication.login(Account { id: 7 }).await.unwrap_err();
+            assert!(matches!(&error, AuthenticationError::Store(_)));
+            assert_eq!(error.to_string(), "create");
 
             let store = Sessions {
                 fail_revoke: true,
@@ -705,10 +687,9 @@ mod tests {
             let authentication = Authentication::new(Accounts::default(), store);
             let session = crate::Session::new(42, Utc::now() + Days::new(1), Account { id: 7 });
 
-            assert!(matches!(
-                authentication.logout(session).await,
-                Err(AuthenticationError::Store(TestError("revoke"))),
-            ));
+            let error = authentication.logout(session).await.unwrap_err();
+            assert!(matches!(&error, AuthenticationError::Store(_)));
+            assert_eq!(error.to_string(), "revoke");
         });
     }
 

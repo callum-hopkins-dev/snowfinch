@@ -36,7 +36,7 @@ pub trait Backend: Send + Sync + 'static {
     type User: User;
 
     /// Backend-specific failure.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>;
 
     /// Loads a user by their stable identifier.
     ///
