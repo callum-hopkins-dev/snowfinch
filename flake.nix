@@ -31,10 +31,8 @@
       {
         devShells.default = pkgs.mkShell {
           packages = [
-            pkgs.pkg-config
             pkgs.rust-bin.stable.latest.default
             pkgs.rust-analyzer
-            pkgs.rustPlatform.bindgenHook
           ];
         };
       }
