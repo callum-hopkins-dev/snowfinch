@@ -30,7 +30,7 @@ pub trait Store: Send + Sync + 'static {
     type UserId: Send + Sync + 'static;
 
     /// Store-specific failure.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>;
 
     /// Loads a session by its opaque identifier.
     fn get(
