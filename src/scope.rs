@@ -238,14 +238,14 @@ macro_rules! __scope_impl_sqlx {
             #[inline(always)]
             fn encode_by_ref(
                 &self,
-                buffer: &mut D::ArgumentBuffer<'q>,
+                buf: &mut <D as sqlx::Database>::ArgumentBuffer,
             ) -> ::core::result::Result<
                 $crate::scope::__private::sqlx::encode::IsNull,
                 $crate::scope::__private::sqlx::error::BoxDynError,
             > {
                 <i64 as $crate::scope::__private::sqlx::Encode<'q, D>>::encode_by_ref(
                     &(self.to_raw() as i64),
-                    buffer,
+                    buf,
                 )
             }
 

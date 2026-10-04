@@ -185,9 +185,9 @@ where
     #[inline(always)]
     fn encode_by_ref(
         &self,
-        buffer: &mut D::ArgumentBuffer<'q>,
+        buf: &mut <D as sqlx::Database>::ArgumentBuffer,
     ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        <Vec<u8> as sqlx::Encode<'q, D>>::encode(self.as_bytes().to_vec(), buffer)
+        <Vec<u8> as sqlx::Encode<'q, D>>::encode(self.as_bytes().to_vec(), buf)
     }
 
     #[inline(always)]
